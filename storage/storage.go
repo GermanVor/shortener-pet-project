@@ -11,29 +11,29 @@ type Storage struct {
 	dbMux  sync.Mutex
 }
 
-func (s *Storage) ShortenUrling(originalUrl string) string {
+func (s *Storage) ShortenURL(originalURL string) string {
 	s.dbMux.Lock()
 
-	shortUrl, isAlreadySaved := s.keysDB[originalUrl]
+	shortURL, isAlreadySaved := s.keysDB[originalURL]
 
 	if !isAlreadySaved {
-		shortUrl = strconv.Itoa(len(s.db) + 1)
+		shortURL = strconv.Itoa(len(s.db) + 1)
 
-		s.keysDB[originalUrl] = shortUrl
-		s.db[shortUrl] = originalUrl
+		s.keysDB[originalURL] = shortURL
+		s.db[shortURL] = originalURL
 	}
 
 	s.dbMux.Unlock()
 
-	return shortUrl
+	return shortURL
 }
 
-func (s *Storage) GetOriginalUrl(shortUrl string) string {
+func (s *Storage) GetOriginalURL(shortURL string) string {
 	s.dbMux.Lock()
-	originalUrl := s.db[shortUrl]
+	originalURL := s.db[shortURL]
 	s.dbMux.Unlock()
 
-	return originalUrl
+	return originalURL
 }
 
 func InitStorage() *Storage {

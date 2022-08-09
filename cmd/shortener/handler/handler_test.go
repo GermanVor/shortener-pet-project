@@ -39,15 +39,15 @@ var redirPolicy = resty.RedirectPolicyFunc(func(_ *http.Request, _ []*http.Reque
 })
 
 func TestServerOperations(t *testing.T) {
-	originalUrl := "http://oknetcumk.biz/b5warb"
+	originalURL := "http://oknetcumk.biz/b5warb"
 
 	storage, endpointURL, cleanupFunc := createTestEnvironment()
 	defer cleanupFunc()
 
-	shortUrl := ""
+	shortURL := ""
 
 	{
-		bodyReader := bytes.NewReader([]byte(originalUrl))
+		bodyReader := bytes.NewReader([]byte(originalURL))
 		req, err := http.NewRequest(http.MethodPost, endpointURL, bodyReader)
 		require.NoError(t, err)
 
@@ -61,9 +61,9 @@ func TestServerOperations(t *testing.T) {
 		bodyBytes, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
 
-		shortUrl = string(bodyBytes)
+		shortURL = string(bodyBytes)
 
-		t.Log("shortUrl from Server: ", shortUrl)
+		t.Log("shortURL from Server: ", shortURL)
 
 		resp.Body.Close()
 	}
@@ -73,10 +73,10 @@ func TestServerOperations(t *testing.T) {
 			SetRedirectPolicy(redirPolicy).
 			R()
 
-		resp, _ := req.Get(shortUrl)
+		resp, _ := req.Get(shortURL)
 
 		assert.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode())
-		assert.Equal(t, originalUrl, resp.Header().Get("Location"))
+		assert.Equal(t, originalURL, resp.Header().Get("Location"))
 	}
 
 	t.Log(storage)
