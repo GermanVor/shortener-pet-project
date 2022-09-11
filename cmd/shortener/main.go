@@ -34,7 +34,6 @@ func main() {
 
 	log.Println("Server started at", Config.ServerAddress)
 
-
 	err := router.Run(Config.ServerAddress)
 	if err != nil {
 		log.Println("Server could not start", err)

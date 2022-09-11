@@ -1,27 +1,44 @@
 package handler
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"io"
-	"log"
 	"net/http"
+	"strings"
 
 	"github.com/GermanVor/shortener-pet-project/internal/storage"
 	"github.com/gin-gonic/gin"
 )
 
 func MakeShortEndpoint(ctx *gin.Context, shortenURL func(string) string) {
-	bodyBytes, err := io.ReadAll(ctx.Request.Body)
-	if err != nil {
-		log.Fatal(err)
+	originalURL := ""
+
+	if strings.Contains(ctx.Request.Header.Get("Content-Encoding"), "gzip") {
+		gReader, err := gzip.NewReader(ctx.Request.Body)
+		if err != nil {
+			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		bytes, _ := io.ReadAll(gReader)
+		originalURL = string(bytes)
+	} else {
+		bodyBytes, err := io.ReadAll(ctx.Request.Body)
+		if err != nil {
+			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		originalURL = string(bodyBytes)
 	}
 
-	originalURL := string(bodyBytes)
 	shortURL := shortenURL(originalURL)
 
-	ctx.Writer.Header().Set("Content-Type", "text/plain")
-	ctx.Writer.WriteHeader(http.StatusCreated)
-	ctx.Writer.Write([]byte(shortURL))
+	w := ctx.Writer
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(http.StatusCreated)
+	w.Write([]byte(shortURL))
 }
 
 func GetFullStrEndpoint(ctx *gin.Context, getOriginalURL func(shortURL string) (string, bool)) {
@@ -50,14 +67,14 @@ type MakeShortPostEndpointResponse struct {
 func MakeShortPostEndpoint(ctx *gin.Context, shortenURL func(string) string) {
 	bodyBytes, err := io.ReadAll(ctx.Request.Body)
 	if err != nil {
-		log.Fatal(err)
+		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	request := &MakeShortPostEndpointRequest{}
 	err = json.Unmarshal(bodyBytes, request)
 	if err != nil {
-		log.Fatal(err)
-		ctx.Writer.WriteHeader(http.StatusBadRequest)
+		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
