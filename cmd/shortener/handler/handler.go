@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/GermanVor/shortener-pet-project/internal/storage"
 	"github.com/gin-gonic/gin"
 )
 
@@ -20,10 +21,10 @@ func MakeShortEndpoint(ctx *gin.Context, shortenURL func(string) string) {
 
 	ctx.Writer.Header().Set("Content-Type", "text/plain")
 	ctx.Writer.WriteHeader(http.StatusCreated)
-	ctx.Writer.Write([]byte("http://" + ctx.Request.Host + "/" + shortURL))
+	ctx.Writer.Write([]byte(shortURL))
 }
 
-func GetFullStrEndpoint(ctx *gin.Context, getOriginalURL func(shortURL string) string) {
+func GetFullStrEndpoint(ctx *gin.Context, getOriginalURL func(shortURL string) (string, bool)) {
 	shortURL := ctx.Param("id")
 
 	if shortURL == "" {
@@ -31,21 +32,17 @@ func GetFullStrEndpoint(ctx *gin.Context, getOriginalURL func(shortURL string) s
 		return
 	}
 
-	originalURL := getOriginalURL(shortURL)
-
-	if originalURL == "" {
+	if originalURL, ok := getOriginalURL(shortURL); ok {
+		ctx.Writer.Header().Set("Location", originalURL)
+		ctx.Writer.WriteHeader(http.StatusTemporaryRedirect)
+	} else {
 		ctx.Writer.WriteHeader(http.StatusBadRequest)
-		return
 	}
-
-	ctx.Writer.Header().Set("Location", originalURL)
-	ctx.Writer.WriteHeader(http.StatusTemporaryRedirect)
 }
 
 type MakeShortPostEndpointRequest struct {
 	URL string `json:"url"`
 }
-
 type MakeShortPostEndpointResponse struct {
 	Result string `json:"result"`
 }
@@ -65,7 +62,7 @@ func MakeShortPostEndpoint(ctx *gin.Context, shortenURL func(string) string) {
 	}
 
 	respose := &MakeShortPostEndpointResponse{
-		Result: "http://" + ctx.Request.Host + "/" + shortenURL(request.URL),
+		Result: shortenURL(request.URL),
 	}
 	responseBytes, _ := json.Marshal(respose)
 
@@ -74,12 +71,7 @@ func MakeShortPostEndpoint(ctx *gin.Context, shortenURL func(string) string) {
 	ctx.Writer.Write(responseBytes)
 }
 
-type Storage interface {
-	GetOriginalURL(a string) string
-	ShortenURL(b string) string
-}
-
-func InitShortenerHandlers(router *gin.Engine, storage Storage) *gin.Engine {
+func InitShortenerHandlers(router *gin.Engine, storage *storage.Storage) *gin.Engine {
 	router.POST("/", func(ctx *gin.Context) {
 		MakeShortEndpoint(ctx, storage.ShortenURL)
 	})

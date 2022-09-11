@@ -3,116 +3,134 @@ package handler_test
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/GermanVor/shortener-pet-project/cmd/shortener/handler"
-	"github.com/GermanVor/shortener-pet-project/storage"
+	"github.com/GermanVor/shortener-pet-project/internal/storage"
 	"github.com/bmizerany/assert"
 	"github.com/gin-gonic/gin"
-	"github.com/go-resty/resty/v2"
 	"github.com/stretchr/testify/require"
 )
 
-func createTestEnvironment() (*storage.Storage, string, func()) {
+var (
+	endpointURL = "http://127.0.0.1:8080"
+)
+
+func TestShortenURLV1(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
 	router := gin.Default()
-
-	storage := storage.InitStorage()
-
+	storage := storage.Init(endpointURL, "")
 	handler.InitShortenerHandlers(router, storage)
-	ts := httptest.NewServer(router)
 
-	endpointURL := ts.URL
+	originalURL := "http://oknetcumk.biz/" + t.Name()
+	shortURL := ""
 
-	cleanupFunc := func() {
-		ts.Close()
-	}
-
-	return storage, endpointURL, cleanupFunc
-}
-
-var errRedirectBlocked = errors.New("HTTP redirect blocked")
-var redirPolicy = resty.RedirectPolicyFunc(func(_ *http.Request, _ []*http.Request) error {
-	return errRedirectBlocked
-})
-
-func TestServerOperations(t *testing.T) {
-	storage, endpointURL, cleanupFunc := createTestEnvironment()
-	defer cleanupFunc()
-
-	t.Run("V1", func(t *testing.T) {
-		originalURL := "http://oknetcumk.biz/" + t.Name()
-		shortURL := ""
-
-		{
-			bodyReader := bytes.NewReader([]byte(originalURL))
-			req, err := http.NewRequest(http.MethodPost, endpointURL, bodyReader)
-			require.NoError(t, err)
-
-			resp, err := http.DefaultClient.Do(req)
-			require.NoError(t, err)
-			defer resp.Body.Close()
-
-			assert.Equal(t, http.StatusCreated, resp.StatusCode)
-
-			bodyBytes, err := io.ReadAll(resp.Body)
-			require.NoError(t, err)
-
-			shortURL = string(bodyBytes)
-
-			t.Log("shortURL from Server: ", shortURL)
-
-			resp.Body.Close()
-		}
-
-		{
-			req := resty.New().
-				SetRedirectPolicy(redirPolicy).
-				R()
-
-			resp, _ := req.Get(shortURL)
-
-			assert.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode())
-			assert.Equal(t, originalURL, resp.Header().Get("Location"))
-		}
-
-		t.Log(storage)
-	})
-
-	t.Run("V2", func(t *testing.T) {
-		originalURL := "http://oknetcumk.biz/" + t.Name()
-
-		requestBody := &handler.MakeShortPostEndpointRequest{
-			URL: originalURL,
-		}
-		requestBytes, err := json.Marshal(requestBody)
+	{
+		bodyReader := bytes.NewReader([]byte(originalURL))
+		req, err := http.NewRequest(http.MethodPost, endpointURL+"/", bodyReader)
 		require.NoError(t, err)
 
-		req, err := http.NewRequest(http.MethodPost, endpointURL+"/api/shorten", bytes.NewReader(requestBytes))
-		require.NoError(t, err)
-
-		resp, err := http.DefaultClient.Do(req)
-		require.NoError(t, err)
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+		resp := recorder.Result()
 		defer resp.Body.Close()
 
-		responseBody := &handler.MakeShortPostEndpointResponse{}
-		err = json.NewDecoder(resp.Body).Decode(responseBody)
+		require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+		bodyBytes, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		shortURL = string(bodyBytes)
+	}
+
+	{
+		req, err := http.NewRequest(http.MethodGet, shortURL, nil)
 		require.NoError(t, err)
 
-		t.Log(responseBody)
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+		resp := recorder.Result()
+		defer resp.Body.Close()
 
-		{
-			req := resty.New().
-				SetRedirectPolicy(redirPolicy).
-				R()
+		assert.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode)
+		assert.Equal(t, originalURL, resp.Header.Get("Location"))
 
-			resp, _ := req.Get(responseBody.Result)
+	}
 
-			assert.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode())
-			assert.Equal(t, originalURL, resp.Header().Get("Location"))
+	{
+		request := handler.MakeShortPostEndpointRequest{
+			URL: originalURL,
 		}
-	})
+		bytesRequest, err := json.Marshal(request)
+		require.NoError(t, err)
+
+		bodyReader := bytes.NewReader(bytesRequest)
+		req, err := http.NewRequest(http.MethodPost, endpointURL+"/api/shorten", bodyReader)
+		require.NoError(t, err)
+
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+		resp := recorder.Result()
+		defer resp.Body.Close()
+
+		bodyBytes, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+
+		respObj := handler.MakeShortPostEndpointResponse{}
+		json.Unmarshal(bodyBytes, &respObj)
+
+		assert.Equal(t, shortURL, respObj.Result)
+	}
+}
+
+func TestShortenURLV2(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router := gin.Default()
+	storage := storage.Init(endpointURL, "")
+	handler.InitShortenerHandlers(router, storage)
+
+	originalURL := "http://oknetcumk.biz/" + t.Name()
+	shortURL := ""
+
+	{
+		request := handler.MakeShortPostEndpointRequest{
+			URL: originalURL,
+		}
+		bytesRequest, err := json.Marshal(request)
+		require.NoError(t, err)
+
+		bodyReader := bytes.NewReader(bytesRequest)
+		req, err := http.NewRequest(http.MethodPost, endpointURL+"/api/shorten", bodyReader)
+		require.NoError(t, err)
+
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+		resp := recorder.Result()
+		defer resp.Body.Close()
+
+		bodyBytes, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+
+		respObj := handler.MakeShortPostEndpointResponse{}
+		json.Unmarshal(bodyBytes, &respObj)
+
+		shortURL = respObj.Result
+	}
+
+	{
+		req, err := http.NewRequest(http.MethodGet, shortURL, nil)
+		require.NoError(t, err)
+
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+		resp := recorder.Result()
+		defer resp.Body.Close()
+
+		assert.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode)
+		assert.Equal(t, originalURL, resp.Header.Get("Location"))
+	}
 }
