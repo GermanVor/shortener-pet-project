@@ -241,3 +241,60 @@ func TestMiddlwareV2(t *testing.T) {
 		assert.Equal(t, originalURL, resp.Header.Get("Location"))
 	}
 }
+
+func TestMiddlware(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router := gin.Default()
+	storage := storage.Init(endpointURL, "")
+	handler.InitShortenerHandlers(router, storage)
+
+	originalURL := "http://oknetcumk.biz/1"
+	shortURL := ""
+
+	cookie := &http.Cookie{
+		Name:  handler.SessionTokenName,
+		Value: "some_token",
+	}
+
+	{
+		bodyReader := bytes.NewReader([]byte(originalURL))
+		req, err := http.NewRequest(http.MethodPost, endpointURL+"/", bodyReader)
+		require.NoError(t, err)
+
+		req.AddCookie(cookie)
+
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+
+		resp := recorder.Result()
+		defer resp.Body.Close()
+
+		bodyBytes, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		shortURL = string(bodyBytes)
+	}
+
+	{
+		req, err := http.NewRequest(http.MethodGet, endpointURL+"/api/user/urls", nil)
+		require.NoError(t, err)
+		req.AddCookie(cookie)
+
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+		resp := recorder.Result()
+		defer resp.Body.Close()
+
+		bodyBytes, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+
+		var urls []handler.UserUrls
+
+		err = json.Unmarshal(bodyBytes, &urls)
+		require.NoError(t, err)
+
+		assert.Equal(t, 1, len(urls))
+		assert.Equal(t, originalURL, urls[0].OriginalURL)
+		assert.Equal(t, shortURL, urls[0].ShortURL)
+	}
+}
