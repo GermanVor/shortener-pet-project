@@ -3,6 +3,7 @@ package handler
 import (
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -39,7 +40,7 @@ func MakeShortEndpoint(ctx *gin.Context, stor storage.Interface) {
 		originalURL = string(bodyBytes)
 	}
 
-	shortURL := stor.ShortenURL(originalURL, ctx.GetString(SessionTokenName))
+	shortURL, _ := stor.ShortenURL(originalURL, ctx.GetString(SessionTokenName))
 
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusCreated)
@@ -56,11 +57,13 @@ func GetFullStrEndpoint(ctx *gin.Context, stor storage.Interface) {
 		return
 	}
 
-	if originalURL, ok := stor.GetOriginalURL(shortURL); ok {
+	originalURL, err := stor.GetOriginalURL(shortURL)
+
+	if errors.Is(err, storage.ErrValueNotFound) {
+		w.WriteHeader(http.StatusBadRequest)
+	} else {
 		w.Header().Set("Location", originalURL)
 		w.WriteHeader(http.StatusTemporaryRedirect)
-	} else {
-		w.WriteHeader(http.StatusBadRequest)
 	}
 }
 
@@ -88,8 +91,10 @@ func MakeShortPostEndpoint(ctx *gin.Context, stor storage.Interface) {
 		return
 	}
 
+	shortURL, _ := stor.ShortenURL(request.URL, ctx.GetString(SessionTokenName))
+
 	respose := &MakeShortPostEndpointResponse{
-		Result: stor.ShortenURL(request.URL, ctx.GetString(SessionTokenName)),
+		Result: shortURL,
 	}
 	responseBytes, _ := json.Marshal(respose)
 
@@ -104,9 +109,9 @@ func GetUsersArchiveEndpoint(ctx *gin.Context, stor storage.Interface) {
 	w := ctx.Writer
 
 	userToken := ctx.GetString(SessionTokenName)
-	archive, ok := stor.GetUserArchive(userToken)
+	archive, err := stor.GetUserArchive(userToken)
 
-	if !ok {
+	if err != nil {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -117,26 +122,26 @@ func GetUsersArchiveEndpoint(ctx *gin.Context, stor storage.Interface) {
 	w.Write(responseBytes)
 }
 
+func UseCookieMiddlware(ctx *gin.Context) {
+	cookie, err := ctx.Request.Cookie(SessionTokenName)
+	if err != nil {
+		log.Println(err)
+	}
+
+	if cookie == nil {
+		cookie = &http.Cookie{
+			Name:  SessionTokenName,
+			Value: uuid.NewString(),
+		}
+
+		http.SetCookie(ctx.Writer, cookie)
+	}
+
+	ctx.Set(SessionTokenName, cookie.Value)
+	ctx.Next()
+}
+
 func InitShortenerHandlers(router *gin.Engine, stor storage.Interface) *gin.Engine {
-	router.Use(func(ctx *gin.Context) {
-		cookie, err := ctx.Request.Cookie(SessionTokenName)
-		if err != nil {
-			log.Println(err)
-		}
-
-		if cookie == nil {
-			cookie = &http.Cookie{
-				Name:  SessionTokenName,
-				Value: uuid.NewString(),
-			}
-
-			http.SetCookie(ctx.Writer, cookie)
-		}
-
-		ctx.Set(SessionTokenName, cookie.Value)
-		ctx.Next()
-	})
-
 	router.POST("/", func(ctx *gin.Context) {
 		MakeShortEndpoint(ctx, stor)
 	})
