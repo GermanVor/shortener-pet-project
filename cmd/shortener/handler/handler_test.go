@@ -9,7 +9,6 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"testing"
 
 	"github.com/GermanVor/shortener-pet-project/cmd/shortener/handler"
@@ -46,6 +45,19 @@ func CleanDB() {
 	conn.Close()
 }
 
+func CheckRefirect(t *testing.T, shortURL, originalURL string, serveHTTP func(w http.ResponseWriter, req *http.Request)) {
+	req, err := http.NewRequest(http.MethodGet, shortURL, nil)
+	require.NoError(t, err)
+
+	recorder := httptest.NewRecorder()
+	serveHTTP(recorder, req)
+	resp := recorder.Result()
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode)
+	assert.Equal(t, originalURL, resp.Header.Get("Location"))
+}
+
 func TestShortenURLV1(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -73,18 +85,7 @@ func TestShortenURLV1(t *testing.T) {
 			shortURL = string(bodyBytes)
 		}
 
-		{
-			req, err := http.NewRequest(http.MethodGet, shortURL, nil)
-			require.NoError(tt, err)
-
-			recorder := httptest.NewRecorder()
-			router.ServeHTTP(recorder, req)
-			resp := recorder.Result()
-			defer resp.Body.Close()
-
-			assert.Equal(tt, http.StatusTemporaryRedirect, resp.StatusCode)
-			assert.Equal(tt, originalURL, resp.Header.Get("Location"))
-		}
+		CheckRefirect(tt, shortURL, originalURL, router.ServeHTTP)
 
 		{
 			request := handler.MakeShortPostEndpointRequest{
@@ -164,18 +165,7 @@ func TestShortenURLV2(t *testing.T) {
 		shortURL = respObj.Result
 	}
 
-	{
-		req, err := http.NewRequest(http.MethodGet, shortURL, nil)
-		require.NoError(t, err)
-
-		recorder := httptest.NewRecorder()
-		router.ServeHTTP(recorder, req)
-		resp := recorder.Result()
-		defer resp.Body.Close()
-
-		assert.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode)
-		assert.Equal(t, originalURL, resp.Header.Get("Location"))
-	}
+	CheckRefirect(t, shortURL, originalURL, router.ServeHTTP)
 }
 
 func TestMiddlwareV1(t *testing.T) {
@@ -213,22 +203,7 @@ func TestMiddlwareV1(t *testing.T) {
 		shortURL = string(bodyBytes)
 	}
 
-	{
-		_, urlParseErr := url.Parse(shortURL)
-
-		t.Log(urlParseErr)
-
-		req, err := http.NewRequest(http.MethodGet, shortURL, nil)
-		require.NoError(t, err)
-
-		recorder := httptest.NewRecorder()
-		router.ServeHTTP(recorder, req)
-		resp := recorder.Result()
-		defer resp.Body.Close()
-
-		assert.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode)
-		assert.Equal(t, originalURL, resp.Header.Get("Location"))
-	}
+	CheckRefirect(t, shortURL, originalURL, router.ServeHTTP)
 }
 
 func TestMiddlwareV2(t *testing.T) {
@@ -266,22 +241,7 @@ func TestMiddlwareV2(t *testing.T) {
 		shortURL = string(bodyBytes)
 	}
 
-	{
-		_, urlParseErr := url.Parse(shortURL)
-
-		t.Log(urlParseErr)
-
-		req, err := http.NewRequest(http.MethodGet, shortURL, nil)
-		require.NoError(t, err)
-
-		recorder := httptest.NewRecorder()
-		router.ServeHTTP(recorder, req)
-		resp := recorder.Result()
-		defer resp.Body.Close()
-
-		assert.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode)
-		assert.Equal(t, originalURL, resp.Header.Get("Location"))
-	}
+	CheckRefirect(t, shortURL, originalURL, router.ServeHTTP)
 }
 
 func TestMiddlware(t *testing.T) {
@@ -341,5 +301,46 @@ func TestMiddlware(t *testing.T) {
 		assert.Equal(t, 1, len(urls))
 		assert.Equal(t, originalURL, urls[0].OriginalURL)
 		assert.Equal(t, shortURL, urls[0].ShortURL)
+	}
+}
+
+func TestMakeShortsPostEndpoint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	storage := storage.InitV1(endpointURL, "")
+
+	router := gin.Default()
+	router.Use(handler.UseCookieMiddlware)
+
+	handler.InitShortenerHandlers(router, storage)
+
+	requestBody := []handler.MakeShortsPostEndpointRequest{
+		{CorrelationID: "qwe", OriginalURL: "http://oknetcumk.biz/1"},
+	}
+
+	{
+		requestBytes, _ := json.Marshal(requestBody)
+		bodyReader := bytes.NewReader(requestBytes)
+		req, err := http.NewRequest(http.MethodPost, endpointURL+"/api/shorten/batch", bodyReader)
+		require.NoError(t, err)
+
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+
+		resp := recorder.Result()
+		defer resp.Body.Close()
+
+		require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+		bodyBytes, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		responseBody := []handler.MakeShortsPostEndpointResponse{}
+		require.NoError(t, json.Unmarshal(bodyBytes, &responseBody))
+
+		require.Equal(t, 1, len(responseBody))
+
+		assert.Equal(t, requestBody[0].CorrelationID, responseBody[0].CorrelationID)
+
+		CheckRefirect(t, responseBody[0].ShortURL, requestBody[0].OriginalURL, router.ServeHTTP)
 	}
 }

@@ -14,6 +14,8 @@ import (
 	"github.com/google/uuid"
 )
 
+type UserUrls = storage.UserUrls
+
 var SessionTokenName = "session_token"
 
 func MakeShortEndpoint(ctx *gin.Context, stor storage.Interface) {
@@ -103,7 +105,46 @@ func MakeShortPostEndpoint(ctx *gin.Context, stor storage.Interface) {
 	w.Write(responseBytes)
 }
 
-type UserUrls = storage.UserUrls
+type MakeShortsPostEndpointRequest = storage.MappingItem
+type MakeShortsPostEndpointResponse struct {
+	CorrelationID string `json:"correlation_id"`
+	ShortURL      string `json:"short_url"`
+}
+
+func MakeShortsPostEndpoint(ctx *gin.Context, stor storage.Interface) {
+	w := ctx.Writer
+	r := ctx.Request
+
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	req := []storage.MappingItem{}
+	err = json.Unmarshal(bodyBytes, &req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	resp := make([]MakeShortsPostEndpointResponse, 0)
+
+	stor.ForEach(req, func(correlationID, shortURL string) error {
+		resp = append(resp, MakeShortsPostEndpointResponse{
+			CorrelationID: correlationID,
+			ShortURL:      shortURL,
+		})
+
+		return nil
+	})
+
+	responseBytes, _ := json.Marshal(resp)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	w.Write(responseBytes)
+}
 
 func GetUsersArchiveEndpoint(ctx *gin.Context, stor storage.Interface) {
 	w := ctx.Writer
@@ -152,6 +193,10 @@ func InitShortenerHandlers(router *gin.Engine, stor storage.Interface) *gin.Engi
 
 	router.POST("/api/shorten", func(ctx *gin.Context) {
 		MakeShortPostEndpoint(ctx, stor)
+	})
+
+	router.POST("/api/shorten/batch", func(ctx *gin.Context) {
+		MakeShortsPostEndpoint(ctx, stor)
 	})
 
 	router.GET("/api/user/urls", func(ctx *gin.Context) {

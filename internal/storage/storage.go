@@ -19,10 +19,16 @@ type UserUrls struct {
 	OriginalURL string `json:"original_url"`
 }
 
+type MappingItem struct {
+	CorrelationID string `json:"correlation_id"`
+	OriginalURL   string `json:"original_url"`
+}
+
 type Interface interface {
 	ShortenURL(originalURL string, userUUID string) (string, error)
 	GetOriginalURL(string) (string, error)
 	GetUserArchive(userUUID string) ([]UserUrls, error)
+	ForEach(mapItem []MappingItem, handler func(CorrelationID string, ShortURL string) error) error
 }
 
 var ErrValueNotFound = errors.New("value not found")
@@ -115,6 +121,20 @@ func (s *V1) GetUserArchive(userUUID string) ([]UserUrls, error) {
 	}
 
 	return res, nil
+}
+
+func (s *V1) ForEach(mapItem []MappingItem, handler func(CorrelationID string, ShortURL string) error) error {
+	for _, iterItem := range mapItem {
+		shortURL, err := s.ShortenURL(iterItem.OriginalURL, "")
+		if err == nil {
+			err = handler(iterItem.CorrelationID, shortURL)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 func InitV1(baseURL, fileStoragePath string) *V1 {
@@ -289,4 +309,18 @@ func (s *V2) GetUserArchive(userUUID string) ([]UserUrls, error) {
 	}
 
 	return res, nil
+}
+
+func (s *V2) ForEach(mapItem []MappingItem, handler func(CorrelationID string, ShortURL string) error) error {
+	for _, iterItem := range mapItem {
+		shortURL, err := s.ShortenURL(iterItem.OriginalURL, "")
+		if err == nil {
+			err = handler(iterItem.CorrelationID, shortURL)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
