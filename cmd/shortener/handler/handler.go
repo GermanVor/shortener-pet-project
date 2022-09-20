@@ -42,10 +42,15 @@ func MakeShortEndpoint(ctx *gin.Context, stor storage.Interface) {
 		originalURL = string(bodyBytes)
 	}
 
-	shortURL, _ := stor.ShortenURL(originalURL, ctx.GetString(SessionTokenName))
+	shortURL, err := stor.ShortenURL(originalURL, ctx.GetString(SessionTokenName))
+
+	if err == storage.ErrValueAlreadyShorted {
+		w.WriteHeader(http.StatusConflict)
+	} else {
+		w.WriteHeader(http.StatusCreated)
+	}
 
 	w.Header().Set("Content-Type", "text/plain")
-	w.WriteHeader(http.StatusCreated)
 	w.Write([]byte(shortURL))
 }
 
@@ -93,15 +98,20 @@ func MakeShortPostEndpoint(ctx *gin.Context, stor storage.Interface) {
 		return
 	}
 
-	shortURL, _ := stor.ShortenURL(request.URL, ctx.GetString(SessionTokenName))
+	shortURL, err := stor.ShortenURL(request.URL, ctx.GetString(SessionTokenName))
 
 	respose := &MakeShortPostEndpointResponse{
 		Result: shortURL,
 	}
 	responseBytes, _ := json.Marshal(respose)
 
+	if err == storage.ErrValueAlreadyShorted {
+		w.WriteHeader(http.StatusConflict)
+	} else {
+		w.WriteHeader(http.StatusCreated)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
 	w.Write(responseBytes)
 }
 
@@ -187,16 +197,16 @@ func InitShortenerHandlers(router *gin.Engine, stor storage.Interface) *gin.Engi
 		MakeShortEndpoint(ctx, stor)
 	})
 
-	router.GET("/:id", func(ctx *gin.Context) {
-		GetFullStrEndpoint(ctx, stor)
-	})
-
 	router.POST("/api/shorten", func(ctx *gin.Context) {
 		MakeShortPostEndpoint(ctx, stor)
 	})
 
 	router.POST("/api/shorten/batch", func(ctx *gin.Context) {
 		MakeShortsPostEndpoint(ctx, stor)
+	})
+
+	router.GET("/:id", func(ctx *gin.Context) {
+		GetFullStrEndpoint(ctx, stor)
 	})
 
 	router.GET("/api/user/urls", func(ctx *gin.Context) {

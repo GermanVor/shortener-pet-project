@@ -65,7 +65,7 @@ func TestShortenURLV1(t *testing.T) {
 		router := gin.Default()
 		handler.InitShortenerHandlers(router, stor)
 
-		originalURL := "http://oknetcumk.biz/" + tt.Name()
+		originalURL := "qwe"
 		shortURL := ""
 
 		{
@@ -102,6 +102,8 @@ func TestShortenURLV1(t *testing.T) {
 			router.ServeHTTP(recorder, req)
 			resp := recorder.Result()
 			defer resp.Body.Close()
+
+			require.Equal(tt, http.StatusConflict, resp.StatusCode)
 
 			bodyBytes, err := io.ReadAll(resp.Body)
 			require.NoError(tt, err)

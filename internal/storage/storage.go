@@ -32,6 +32,8 @@ type Interface interface {
 }
 
 var ErrValueNotFound = errors.New("value not found")
+var ErrValueAlreadyShorted = errors.New("value not found")
+
 
 type voidType struct{}
 type setStringType map[string]voidType
@@ -53,6 +55,7 @@ type V1 struct {
 func (s *V1) ShortenURL(originalURL string, userUUID string) (string, error) {
 	s.dbMux.Lock()
 
+	var alreadyShortedURLErr error
 	shortenURLId, isAlreadySaved := s.keysDB[originalURL]
 
 	if !isAlreadySaved {
@@ -65,6 +68,8 @@ func (s *V1) ShortenURL(originalURL string, userUUID string) (string, error) {
 			backupBytes, _ := json.Marshal(&s.db)
 			os.WriteFile(s.fileStoragePath, backupBytes, 0644)
 		}
+	} else {
+		alreadyShortedURLErr = ErrValueAlreadyShorted
 	}
 
 	s.dbMux.Unlock()
@@ -81,7 +86,7 @@ func (s *V1) ShortenURL(originalURL string, userUUID string) (string, error) {
 		s.usersArcMux.Unlock()
 	}
 
-	return s.baseURL + "/" + shortenURLId, nil
+	return s.baseURL + "/" + shortenURLId, alreadyShortedURLErr
 }
 
 func (s *V1) GetOriginalURL(shortenURLId string) (string, error) {
@@ -233,11 +238,12 @@ func (s *V2) ShortenURL(originalURL string, userUUID string) (string, error) {
 	tx, _ := s.dbPool.Begin(context.TODO())
 	defer tx.Rollback(context.TODO())
 
+	var alreadyShortedURLErr error
+
 	sql := "SELECT shortenURL FROM shortensArchive WHERE originalURL=$1"
 	err := s.dbPool.QueryRow(context.TODO(), sql, originalURL).Scan(&id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-
 			sql = "INSERT INTO shortensArchive (originalURL) " +
 				"VALUES ($1) ON CONFLICT (originalURL) " +
 				"DO UPDATE SET originalURL=EXCLUDED.originalURL " +
@@ -249,6 +255,8 @@ func (s *V2) ShortenURL(originalURL string, userUUID string) (string, error) {
 		} else {
 			return "", err
 		}
+	} else {
+		alreadyShortedURLErr = ErrValueAlreadyShorted
 	}
 
 	shortenURLId = strconv.Itoa(id)
@@ -262,7 +270,11 @@ func (s *V2) ShortenURL(originalURL string, userUUID string) (string, error) {
 		}
 	}
 
-	return s.baseURL + "/" + shortenURLId, tx.Commit(context.TODO())
+	if err := tx.Commit(context.TODO()); err != nil {
+		return "", err
+	}
+
+	return s.baseURL + "/" + shortenURLId, alreadyShortedURLErr
 }
 
 func (s *V2) GetOriginalURL(shortenURLId string) (string, error) {
