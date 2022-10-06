@@ -64,10 +64,16 @@ func GetFullStrEndpoint(ctx *gin.Context, stor storage.Interface) {
 		return
 	}
 
-	originalURL, err := stor.GetOriginalURL(shortURL)
+	originalURL, err := stor.GetOriginalURL(shortURL, ctx.GetString(SessionTokenName))
 
-	if errors.Is(err, storage.ErrValueNotFound) {
-		w.WriteHeader(http.StatusBadRequest)
+	if err != nil {
+		if errors.Is(err, storage.ErrValueNotFound) {
+			w.WriteHeader(http.StatusBadRequest)
+		} else if errors.Is(err, storage.ErrValueGone) {
+			w.WriteHeader(http.StatusGone)
+		} else {
+			w.WriteHeader(http.StatusInternalServerError)
+		}
 	} else {
 		w.Header().Set("Location", originalURL)
 		w.WriteHeader(http.StatusTemporaryRedirect)
@@ -131,7 +137,7 @@ func MakeShortsPostEndpoint(ctx *gin.Context, stor storage.Interface) {
 		return
 	}
 
-	req := []storage.MappingItem{}
+	req := []MakeShortsPostEndpointRequest{}
 	err = json.Unmarshal(bodyBytes, &req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -140,7 +146,7 @@ func MakeShortsPostEndpoint(ctx *gin.Context, stor storage.Interface) {
 
 	resp := make([]MakeShortsPostEndpointResponse, 0)
 
-	stor.ForEach(req, func(correlationID, shortURL string) error {
+	stor.ForEach(req, ctx.GetString(SessionTokenName), func(correlationID, shortURL string) error {
 		resp = append(resp, MakeShortsPostEndpointResponse{
 			CorrelationID: correlationID,
 			ShortURL:      shortURL,
@@ -154,6 +160,32 @@ func MakeShortsPostEndpoint(ctx *gin.Context, stor storage.Interface) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	w.Write(responseBytes)
+}
+
+func DeleteUrls(ctx *gin.Context, stor storage.Interface) {
+	w := ctx.Writer
+	r := ctx.Request
+
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	keys := []string{}
+	err = json.Unmarshal(bodyBytes, &keys)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	err = stor.DeleteKeys(keys, ctx.GetString(SessionTokenName))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func GetUsersArchiveEndpoint(ctx *gin.Context, stor storage.Interface) {
@@ -179,7 +211,7 @@ func UseCookieMiddlware(ctx *gin.Context) {
 		log.Println(err)
 	}
 
-	if cookie == nil {
+	if cookie == nil && ctx.Request.Method == http.MethodPost {
 		cookie = &http.Cookie{
 			Name:  SessionTokenName,
 			Value: uuid.NewString(),
@@ -188,7 +220,10 @@ func UseCookieMiddlware(ctx *gin.Context) {
 		http.SetCookie(ctx.Writer, cookie)
 	}
 
-	ctx.Set(SessionTokenName, cookie.Value)
+	if cookie != nil {
+		ctx.Set(SessionTokenName, cookie.Value)
+	}
+
 	ctx.Next()
 }
 
@@ -211,6 +246,10 @@ func InitShortenerHandlers(router *gin.Engine, stor storage.Interface) *gin.Engi
 
 	router.GET("/api/user/urls", func(ctx *gin.Context) {
 		GetUsersArchiveEndpoint(ctx, stor)
+	})
+
+	router.DELETE("/api/user/urls", func(ctx *gin.Context) {
+		DeleteUrls(ctx, stor)
 	})
 
 	return router

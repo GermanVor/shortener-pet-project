@@ -45,7 +45,7 @@ func CleanDB() {
 	conn.Close()
 }
 
-func CheckRefirect(t *testing.T, shortURL, originalURL string, serveHTTP func(w http.ResponseWriter, req *http.Request)) {
+func CheckRedirect(t *testing.T, shortURL, originalURL string, serveHTTP func(w http.ResponseWriter, req *http.Request)) {
 	req, err := http.NewRequest(http.MethodGet, shortURL, nil)
 	require.NoError(t, err)
 
@@ -71,21 +71,22 @@ func TestShortenURLV1(t *testing.T) {
 		{
 			bodyReader := bytes.NewReader([]byte(originalURL))
 			req, err := http.NewRequest(http.MethodPost, endpointURL+"/", bodyReader)
-			require.NoError(tt, err)
+			require.NoError(t, err)
 
 			recorder := httptest.NewRecorder()
 			router.ServeHTTP(recorder, req)
 			resp := recorder.Result()
 			defer resp.Body.Close()
 
-			require.Equal(tt, http.StatusCreated, resp.StatusCode)
+			require.Equal(t, http.StatusCreated, resp.StatusCode)
 
 			bodyBytes, err := io.ReadAll(resp.Body)
-			require.NoError(tt, err)
+			require.NoError(t, err)
+
 			shortURL = string(bodyBytes)
 		}
 
-		CheckRefirect(tt, shortURL, originalURL, router.ServeHTTP)
+		CheckRedirect(tt, shortURL, originalURL, router.ServeHTTP)
 
 		{
 			request := handler.MakeShortPostEndpointRequest{
@@ -123,6 +124,7 @@ func TestShortenURLV1(t *testing.T) {
 
 	// t.Run("Storage DB", func(tt *testing.T) {
 	// 	CleanDB()
+	// 	defer CleanDB()
 
 	// 	dbContext := context.Background()
 	// 	stor, err := storage.InitV2(endpointURL, dbContext, connString)
@@ -167,7 +169,7 @@ func TestShortenURLV2(t *testing.T) {
 		shortURL = respObj.Result
 	}
 
-	CheckRefirect(t, shortURL, originalURL, router.ServeHTTP)
+	CheckRedirect(t, shortURL, originalURL, router.ServeHTTP)
 }
 
 func TestMiddlwareV1(t *testing.T) {
@@ -205,7 +207,7 @@ func TestMiddlwareV1(t *testing.T) {
 		shortURL = string(bodyBytes)
 	}
 
-	CheckRefirect(t, shortURL, originalURL, router.ServeHTTP)
+	CheckRedirect(t, shortURL, originalURL, router.ServeHTTP)
 }
 
 func TestMiddlwareV2(t *testing.T) {
@@ -243,7 +245,7 @@ func TestMiddlwareV2(t *testing.T) {
 		shortURL = string(bodyBytes)
 	}
 
-	CheckRefirect(t, shortURL, originalURL, router.ServeHTTP)
+	CheckRedirect(t, shortURL, originalURL, router.ServeHTTP)
 }
 
 func TestMiddlware(t *testing.T) {
@@ -273,7 +275,6 @@ func TestMiddlware(t *testing.T) {
 
 		recorder := httptest.NewRecorder()
 		router.ServeHTTP(recorder, req)
-
 		resp := recorder.Result()
 		defer resp.Body.Close()
 
@@ -343,6 +344,93 @@ func TestMakeShortsPostEndpoint(t *testing.T) {
 
 		assert.Equal(t, requestBody[0].CorrelationID, responseBody[0].CorrelationID)
 
-		CheckRefirect(t, responseBody[0].ShortURL, requestBody[0].OriginalURL, router.ServeHTTP)
+		CheckRedirect(t, responseBody[0].ShortURL, requestBody[0].OriginalURL, router.ServeHTTP)
 	}
+}
+
+func TestDeleteEndpoint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	testBody := func(tt *testing.T, stor storage.Interface) {
+		router := gin.Default()
+		router.Use(handler.UseCookieMiddlware)
+
+		handler.InitShortenerHandlers(router, stor)
+
+		originalURLs := []string{"qwe", "rty"}
+		shortURLsID := make([]string, len(originalURLs))
+
+		cookie := &http.Cookie{
+			Name:  handler.SessionTokenName,
+			Value: "some_token",
+		}
+
+		for i, originalURL := range originalURLs {
+			bodyReader := bytes.NewReader([]byte(originalURL))
+			req, err := http.NewRequest(http.MethodPost, endpointURL+"/", bodyReader)
+			require.NoError(tt, err)
+
+			req.AddCookie(cookie)
+
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, req)
+			resp := recorder.Result()
+
+			require.Equal(tt, http.StatusCreated, resp.StatusCode)
+
+			bodyBytes, err := io.ReadAll(resp.Body)
+			require.NoError(tt, err)
+
+			shortURLsID[i] = string(bodyBytes)[len(endpointURL)+1:]
+
+			resp.Body.Close()
+		}
+
+		{
+			requestBytes, _ := json.Marshal(shortURLsID)
+			bodyReader := bytes.NewReader(requestBytes)
+			req, err := http.NewRequest(http.MethodDelete, endpointURL+"/api/user/urls", bodyReader)
+			require.NoError(t, err)
+
+			req.AddCookie(cookie)
+
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, req)
+			resp := recorder.Result()
+			defer resp.Body.Close()
+
+			assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+		}
+
+		for _, shortURLId := range shortURLsID {
+			req, err := http.NewRequest(http.MethodGet, endpointURL+"/"+shortURLId, nil)
+			require.NoError(t, err)
+
+			req.AddCookie(cookie)
+
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, req)
+			resp := recorder.Result()
+			resp.Body.Close()
+
+			assert.Equal(t, http.StatusGone, resp.StatusCode)
+		}
+	}
+
+	t.Run("Storage mock", func(tt *testing.T) {
+		stor := storage.InitV1(endpointURL, "")
+
+		testBody(tt, stor)
+	})
+
+	// t.Run("Storage DB", func(tt *testing.T) {
+	// 	CleanDB()
+	// 	// defer CleanDB()
+
+	// 	dbContext := context.Background()
+	// 	stor, err := storage.InitV2(endpointURL, dbContext, connString)
+	// 	require.NoError(tt, err)
+
+	// 	testBody(tt, stor)
+	// })
 }

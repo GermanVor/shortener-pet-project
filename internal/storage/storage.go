@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/GermanVor/shortener-pet-project/internal/common"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 )
@@ -26,17 +27,17 @@ type MappingItem struct {
 
 type Interface interface {
 	ShortenURL(originalURL string, userUUID string) (string, error)
-	GetOriginalURL(string) (string, error)
+	GetOriginalURL(shortURLId string, userUUID string) (string, error)
 	GetUserArchive(userUUID string) ([]UserUrls, error)
-	ForEach(mapItem []MappingItem, handler func(CorrelationID string, ShortURL string) error) error
+	ForEach(mapItem []MappingItem, userUUID string, handler func(correlationID string, shortURLId string) error) error
+	DeleteKeys(items []string, userUUID string) error
 }
 
 var ErrValueNotFound = errors.New("value not found")
+var ErrValueGone = errors.New("value is gone")
 var ErrValueAlreadyShorted = errors.New("value not found")
 
-
-type voidType struct{}
-type setStringType map[string]voidType
+type setStringType map[string]bool
 
 type V1 struct {
 	Interface
@@ -76,29 +77,38 @@ func (s *V1) ShortenURL(originalURL string, userUUID string) (string, error) {
 
 	if userUUID != "" {
 		s.usersArcMux.Lock()
+		defer s.usersArcMux.Unlock()
 
 		if s.usersArchive[userUUID] == nil {
 			s.usersArchive[userUUID] = make(setStringType)
 		}
 
-		s.usersArchive[userUUID][shortenURLId] = voidType{}
-
-		s.usersArcMux.Unlock()
+		s.usersArchive[userUUID][shortenURLId] = true
 	}
 
 	return s.baseURL + "/" + shortenURLId, alreadyShortedURLErr
 }
 
-func (s *V1) GetOriginalURL(shortenURLId string) (string, error) {
+func (s *V1) GetOriginalURL(shortenURLId string, userUUID string) (string, error) {
+	if userUUID != "" {
+		s.usersArcMux.RLock()
+		defer s.usersArcMux.RUnlock()
+
+		if s.usersArchive[userUUID] == nil || !s.usersArchive[userUUID][shortenURLId] {
+			return "", ErrValueGone
+		}
+	}
+
 	s.dbMux.RLock()
+	defer s.dbMux.RUnlock()
+
 	originalURL, ok := s.db[shortenURLId]
-	s.dbMux.RUnlock()
 
 	if ok {
 		return originalURL, nil
 	}
 
-	return originalURL, ErrValueNotFound
+	return "", ErrValueNotFound
 }
 
 func (s *V1) GetUserArchive(userUUID string) ([]UserUrls, error) {
@@ -128,15 +138,30 @@ func (s *V1) GetUserArchive(userUUID string) ([]UserUrls, error) {
 	return res, nil
 }
 
-func (s *V1) ForEach(mapItem []MappingItem, handler func(CorrelationID string, ShortURL string) error) error {
+func (s *V1) ForEach(mapItem []MappingItem, userUUID string, handler func(CorrelationID string, ShortURL string) error) error {
 	for _, iterItem := range mapItem {
-		shortURL, err := s.ShortenURL(iterItem.OriginalURL, "")
+		shortURL, err := s.ShortenURL(iterItem.OriginalURL, userUUID)
 		if err == nil {
 			err = handler(iterItem.CorrelationID, shortURL)
 			if err != nil {
 				return err
 			}
 		}
+	}
+
+	return nil
+}
+
+func (s *V1) DeleteKeys(items []string, userUUID string) error {
+	s.usersArcMux.Lock()
+	defer s.usersArcMux.Unlock()
+
+	if s.usersArchive[userUUID] == nil {
+		return nil
+	}
+
+	for _, shortURL := range items {
+		s.usersArchive[userUUID][shortURL] = false
 	}
 
 	return nil
@@ -189,16 +214,16 @@ func InitV2(baseURL string, dbContext context.Context, connString string) (*V2, 
 	log.Printf("Connected to DB %s successfully\n", connString)
 
 	tx, err := conn.Begin(dbContext)
-	defer tx.Rollback(context.TODO())
-
 	if err != nil {
 		return nil, err
 	}
 
+	defer tx.Rollback(context.TODO())
+
 	{
 		sql := "CREATE TABLE IF NOT EXISTS shortensArchive (" +
 			"originalURL text UNIQUE, " +
-			"shortenURL SERIAL " +
+			"shortenURLId SERIAL " +
 			");"
 		_, err = tx.Exec(context.TODO(), sql)
 		if err != nil {
@@ -209,6 +234,7 @@ func InitV2(baseURL string, dbContext context.Context, connString string) (*V2, 
 		sql := "CREATE TABLE IF NOT EXISTS usersArchive (" +
 			"userUUID text, " +
 			"shortenURLId text, " +
+			"isPresent boolean DEFAULT TRUE, " +
 			"PRIMARY KEY (userUUID, shortenURLId) " +
 			");"
 		_, err = tx.Exec(context.TODO(), sql)
@@ -240,14 +266,14 @@ func (s *V2) ShortenURL(originalURL string, userUUID string) (string, error) {
 
 	var alreadyShortedURLErr error
 
-	sql := "SELECT shortenURL FROM shortensArchive WHERE originalURL=$1"
+	sql := "SELECT shortenURLId FROM shortensArchive WHERE originalURL=$1"
 	err := s.dbPool.QueryRow(context.TODO(), sql, originalURL).Scan(&id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			sql = "INSERT INTO shortensArchive (originalURL) " +
 				"VALUES ($1) ON CONFLICT (originalURL) " +
 				"DO UPDATE SET originalURL=EXCLUDED.originalURL " +
-				"RETURNING shortenURL;"
+				"RETURNING shortenURLId;"
 			err := tx.QueryRow(context.TODO(), sql, originalURL).Scan(&id)
 			if err != nil {
 				return "", err
@@ -277,10 +303,27 @@ func (s *V2) ShortenURL(originalURL string, userUUID string) (string, error) {
 	return s.baseURL + "/" + shortenURLId, alreadyShortedURLErr
 }
 
-func (s *V2) GetOriginalURL(shortenURLId string) (string, error) {
+func (s *V2) GetOriginalURL(shortenURLId string, userUUID string) (string, error) {
+	if userUUID != "" {
+		isPresent := false
+		sql := "SELECT isPresent FROM usersArchive WHERE userUUID=$1 AND shortenURLId=$2;"
+		err := s.dbPool.QueryRow(context.TODO(), sql, userUUID, shortenURLId).Scan(&isPresent)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return "", ErrValueNotFound
+			} else {
+				return "", err
+			}
+		}
+
+		if !isPresent {
+			return "", ErrValueGone
+		}
+	}
+
 	originalURL := ""
 
-	sql := "SELECT originalURL FROM shortensArchive WHERE shortenURL=$1"
+	sql := "SELECT originalURL FROM shortensArchive WHERE shortenURLId=$1"
 	err := s.dbPool.QueryRow(context.TODO(), sql, shortenURLId).Scan(&originalURL)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -305,7 +348,7 @@ func (s *V2) GetUserArchive(userUUID string) ([]UserUrls, error) {
 			return nil, err
 		}
 
-		originalURL, err := s.GetOriginalURL(shortenURLId)
+		originalURL, err := s.GetOriginalURL(shortenURLId, userUUID)
 		if err != nil {
 			if errors.Is(err, ErrValueNotFound) {
 				continue
@@ -323,9 +366,10 @@ func (s *V2) GetUserArchive(userUUID string) ([]UserUrls, error) {
 	return res, nil
 }
 
-func (s *V2) ForEach(mapItem []MappingItem, handler func(CorrelationID string, ShortURL string) error) error {
+func (s *V2) ForEach(mapItem []MappingItem, userUUID string, handler func(CorrelationID string, ShortURL string) error) error {
 	for _, iterItem := range mapItem {
-		shortURL, err := s.ShortenURL(iterItem.OriginalURL, "")
+		//TODO may be better use SendBatch
+		shortURL, err := s.ShortenURL(iterItem.OriginalURL, userUUID)
 		if err == nil {
 			err = handler(iterItem.CorrelationID, shortURL)
 			if err != nil {
@@ -335,4 +379,48 @@ func (s *V2) ForEach(mapItem []MappingItem, handler func(CorrelationID string, S
 	}
 
 	return nil
+}
+
+func (s *V2) DeleteKeys(items []string, userUUID string) error {
+	tx, err := s.dbPool.Begin(context.TODO())
+	if err != nil {
+		return err
+	}
+
+	defer tx.Rollback(context.TODO())
+
+	var wg sync.WaitGroup
+
+	sql := "UPDATE usersArchive " +
+		"SET isPresent=FALSE " +
+		"WHERE userUUID=$1 AND shortenURLId=$2;"
+
+	for _, shortURLsChunks := range common.Chunks(items, 15) {
+		wg.Add(1)
+
+		go func(shortURLsChunks []string) {
+			defer wg.Done()
+
+			b := &pgx.Batch{}
+
+			for _, shortURL := range shortURLsChunks {
+				b.Queue(sql, userUUID, shortURL)
+			}
+
+			batchResults := tx.SendBatch(context.TODO(), b)
+
+			var err error
+			for err == nil {
+				_, err = batchResults.Exec()
+				if err != nil && err.Error() != "no result" {
+					tx.Rollback(context.TODO())
+					return
+				}
+			}
+		}(shortURLsChunks)
+	}
+
+	wg.Wait()
+
+	return tx.Commit(context.TODO())
 }

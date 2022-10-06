@@ -52,3 +52,27 @@ func InitFlagsConfig(config *Config) *Config {
 
 	return config
 }
+
+func min[T ~int](a, b T) T {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func Chunks[T any](arr []T, chunkSize int) [][]T {
+	if len(arr) == 0 || chunkSize <= 0 {
+		return nil
+	}
+
+	chunks := make([][]T, (len(arr)-1)/chunkSize+1)
+
+	for i := range chunks {
+		leftIdx := i * chunkSize
+		rightIdx := leftIdx + min(chunkSize, len(arr)-leftIdx)
+
+		chunks[i] = arr[leftIdx:rightIdx:rightIdx]
+	}
+
+	return chunks
+}
